@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Posture Detection System</title>
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/material-components-web/14.0.0/material-components-web.min.css"
+      rel="stylesheet"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/material-components-web/14.0.0/material-components-web.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+      :root {
+        --claude-primary: #6854cc;
+        --claude-background: #171717;
+        --claude-text: #ffffff;
+        --claude-secondary-bg: #222222;
+        --claude-border: #383838;
+        --claude-hover: #5846c5;
+        --claude-muted-text: #a8a8a8;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 400;
+        font-size: 16px;
+        line-height: 1.6;
+        background-color: var(--claude-background);
+        color: var(--claude-text);
+      }
+
+      h1, h2, h3, h4, h5, h6 {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: var(--claude-text);
+      }
+
+      h1 {
+        font-size: 2.5rem;
+        margin-bottom: 0.5em;
+      }
+
+      h2 {
+        font-size: 1.5rem;
+        margin-bottom: 1em;
+      }
+
+      .main-content {
+        display: flex;
+        gap: 24px;
+        justify-content: center;
+        align-items: flex-start;
+        margin-bottom: 24px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 32px;
+      }
+
+      .header p {
+        color: var(--claude-muted-text);
+        font-size: 1.1rem;
+      }
+
+      .video-container {
+        flex: 0 0 auto;
+        margin-bottom: 0;
+      }
+
+      .right-column {
+        flex: 0 0 300px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      #videoElement {
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+      }
+
+      .controls {
+        display: flex;
+        gap: 16px;
+        justify-content: center;
+        margin-bottom: 24px;
+      }
+
+      .status-container {
+        min-height: 300px;
+        background: var(--claude-secondary-bg);
+        padding: 24px;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--claude-border);
+      }
+
+      .status-container div {
+        font-weight: 400;
+        font-size: 1rem;
+        margin: 12px 0;
+        color: var(--claude-muted-text);
+      }
+
+      .mdc-button {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+        font-weight: 500 !important;
+        font-size: 1rem !important;
+        letter-spacing: 0 !important;
+        padding: 12px 24px !important;
+        border-radius: 8px !important;
+        cursor: pointer;
+        width: auto !important;
+        transition: background-color 0.2s, transform 0.2s;
+        background-color: var(--claude-primary) !important;
+        color: white !important;
+        border: none !important;
+        height: auto !important;
+        line-height: 1.5 !important;
+      }
+
+      .mdc-button:hover {
+        background-color: var(--claude-hover) !important;
+        transform: translateY(-1px);
+      }
+
+      .mdc-button:disabled {
+        background-color: #383838 !important;
+        color: var(--claude-muted-text) !important;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .mdc-button__label {
+        color: inherit !important;
+      }
+
+      .navbar {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: var(--claude-secondary-bg);
+        border-radius: 50px;
+        padding: 12px 24px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--claude-border);
+      }
+
+      .navbar a {
+        color: var(--claude-text);
+        text-decoration: none;
+        margin: 0 10px;
+        font-weight: 500;
+        font-size: 1rem;
+      }
+
+      .navbar a:hover {
+        color: var(--claude-primary);
+      }
+
+      #calibrationProgress {
+        width: 100%;
+        margin-top: 16px;
+        height: 4px;
+        position: relative;
+      }
+
+      .mdc-linear-progress {
+        height: 4px;
+      }
+
+      .mdc-linear-progress__bar {
+        background-color: var(--claude-primary) !important;
+      }
+
+      .mdc-linear-progress__buffer {
+        background-color: var(--claude-border) !important;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Posture Detection System</h1>
+        <p>Monitor your posture and mouth position in real-time</p>
+      </div>
+
+      <div class="main-content">
+        <div class="video-container">
+          <video id="videoElement" width="640" height="480" autoplay></video>
+        </div>
+
+        <div class="right-column">
+          <div class="controls">
+            <button id="startButton" class="mdc-button">
+              <span class="mdc-button__label">Start Camera</span>
+            </button>
+            <button id="calibrateButton" class="mdc-button">
+              <span class="mdc-button__label">Calibrate</span>
+            </button>
+          </div>
+
+          <div class="status-container">
+            <h2>Status</h2>
+            <div id="headStatus">Head Position: Waiting for calibration...</div>
+            <div id="mouthStatus">Mouth Position: Waiting for calibration...</div>
+            <div id="calibrationStatus"></div>
+            <div class="mdc-linear-progress" id="calibrationProgress" role="progressbar">
+              <div class="mdc-linear-progress__buffer"></div>
+              <div class="mdc-linear-progress__bar mdc-linear-progress__primary-bar">
+                <span class="mdc-linear-progress__bar-inner"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="navbar">
+      <a href="index.html">Home</a>
+    </div>
+
+    <script src="/js/app.js"></script>
+  </body>
+</html>
