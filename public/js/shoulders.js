@@ -159,6 +159,7 @@ class PoseDetection {
             this.startCamera();
         });
         
+        // Use arrow function to maintain 'this' reference
         this.calibrateButton.addEventListener('click', () => this.startCalibration());
         
         // Add background monitoring toggle button
@@ -384,8 +385,11 @@ class PoseDetection {
 
     // Start the calibration process
     async startCalibration() {
+        console.log("Starting calibration process...");
         this.calibrateButton.disabled = true;
         this.calibrationStatus.textContent = 'Calibrating... Please sit in your ideal posture';
+        
+        // Ensure the progress bar is properly initialized
         this.calibrationProgress.determinate = true;
         this.calibrationProgress.progress = 0;
         
@@ -400,11 +404,30 @@ class PoseDetection {
         const neckAngles = [];
         const totalFrames = 100;
         let currentFrame = 0;
+        let attempts = 0;
+        const maxAttempts = 300; // Prevent infinite loops
 
         // Calibration interval
         const calibrationInterval = setInterval(() => {
+            attempts++;
+            console.log(`Calibration frame attempt: ${attempts}, successful frames: ${currentFrame}/${totalFrames}`);
+            
+            // Safety check to prevent infinite loops
+            if (attempts > maxAttempts) {
+                clearInterval(calibrationInterval);
+                this.calibrationStatus.textContent = 'Calibration failed. Please ensure your shoulders and face are clearly visible.';
+                this.calibrateButton.disabled = false;
+                return;
+            }
+
             if (currentFrame >= totalFrames) {
                 clearInterval(calibrationInterval);
+                
+                if (shoulderAngles.length === 0 || neckAngles.length === 0) {
+                    this.calibrationStatus.textContent = 'Calibration failed. Please ensure your shoulders and face are clearly visible.';
+                    this.calibrateButton.disabled = false;
+                    return;
+                }
                 
                 // Calculate average values from collected measurements
                 this.calibratedShoulderAngle = shoulderAngles.reduce((a, b) => a + b) / shoulderAngles.length;
@@ -432,41 +455,61 @@ class PoseDetection {
             if (this.lastResults && this.lastResults.poseLandmarks) {
                 const landmarks = this.lastResults.poseLandmarks;
                 
-                // Check if key landmarks are visible with sufficient confidence
-                if (this.checkLandmarksVisibility(landmarks)) {
-                    // Calculate shoulder angle (left shoulder, right shoulder, right hip)
-                    const shoulderAngle = this.calculateAngle(
-                        landmarks[11], // Left shoulder
-                        landmarks[12], // Right shoulder
-                        landmarks[24]  // Right hip
-                    );
-                    
-                    // Calculate neck angle (nose, mid-shoulders, mid-hips)
-                    const midShoulder = {
-                        x: (landmarks[11].x + landmarks[12].x) / 2,
-                        y: (landmarks[11].y + landmarks[12].y) / 2
-                    };
-                    
-                    const midHip = {
-                        x: (landmarks[23].x + landmarks[24].x) / 2,
-                        y: (landmarks[23].y + landmarks[24].y) / 2
-                    };
-                    
-                    const neckAngle = this.calculateAngle(
-                        landmarks[0],  // Nose
-                        midShoulder,   // Mid-shoulders
-                        midHip         // Mid-hips
-                    );
+                // Use the modified check for landmarks that only requires shoulders and head
+                if (this.checkLandmarksForCalibration(landmarks)) {
+                    try {
+                        // Calculate shoulder angle using both shoulders and horizontal reference
+                        const leftShoulder = landmarks[11];
+                        const rightShoulder = landmarks[12];
+                        
+                        // Create a horizontal reference point
+                        const horizontalReference = {
+                            x: rightShoulder.x + 0.2, // Point to the right
+                            y: rightShoulder.y        // Same vertical position
+                        };
+                        
+                        const shoulderAngle = this.calculateAngle(
+                            leftShoulder,
+                            rightShoulder,
+                            horizontalReference
+                        );
+                        
+                        // Calculate neck angle using nose and shoulders
+                        const midShoulder = {
+                            x: (leftShoulder.x + landmarks[12].x) / 2,
+                            y: (leftShoulder.y + landmarks[12].y) / 2
+                        };
+                        
+                        // Create a vertical reference point below mid-shoulder
+                        const verticalReference = {
+                            x: midShoulder.x,       // Same horizontal position
+                            y: midShoulder.y + 0.2  // Point below
+                        };
+                        
+                        const neckAngle = this.calculateAngle(
+                            landmarks[0], // Nose
+                            midShoulder,
+                            verticalReference
+                        );
 
-                    shoulderAngles.push(shoulderAngle);
-                    neckAngles.push(neckAngle);
-                    currentFrame++;
-                    this.calibrationProgress.progress = currentFrame / totalFrames;
+                        shoulderAngles.push(shoulderAngle);
+                        neckAngles.push(neckAngle);
+                        currentFrame++;
+                        
+                        // Update progress visually
+                        this.calibrationProgress.progress = currentFrame / totalFrames;
+                        
+                        // Update status text with progress percentage
+                        const progressPercent = Math.round((currentFrame / totalFrames) * 100);
+                        this.calibrationStatus.textContent = `Calibrating... ${progressPercent}% complete`;
+                    } catch (error) {
+                        console.error("Error during calibration calculations:", error);
+                    }
                 }
             }
         }, 30);
     }
-    
+
     // Check if the required landmarks are visible with good confidence
     checkLandmarksVisibility(landmarks) {
         const keyPoints = [0, 11, 12, 23, 24]; // Nose, shoulders, hips
@@ -474,6 +517,31 @@ class PoseDetection {
             landmarks[point] && 
             landmarks[point].visibility && 
             landmarks[point].visibility > this.confidenceThreshold);
+    }
+
+    // Add this new helper method with less strict landmark checking for calibration
+    checkLandmarksForCalibration(landmarks) {
+        // Only require nose and shoulders, not hips
+        const keyPoints = [0, 11, 12]; // Nose, left shoulder, right shoulder
+        
+        // First verify that points exist
+        if (!keyPoints.every(point => landmarks[point])) {
+            console.log("Some required landmarks not detected:", keyPoints.filter(point => !landmarks[point]));
+            return false;
+        }
+        
+        // Then check visibility with a lower threshold for calibration
+        const calibrationThreshold = 0.3; // Lower threshold during calibration
+        const visibilityCheck = keyPoints.every(point => 
+            landmarks[point].visibility === undefined || 
+            landmarks[point].visibility > calibrationThreshold);
+        
+        if (!visibilityCheck) {
+            console.log("Low visibility for some landmarks:", 
+                keyPoints.map(point => ({point, visibility: landmarks[point].visibility})));
+        }
+        
+        return visibilityCheck;
     }
 
     // Process detection results and draw landmarks
@@ -506,13 +574,22 @@ class PoseDetection {
         
         const landmarks = results.poseLandmarks;
         
-        // Check if key landmarks are visible with sufficient confidence
-        if (this.checkLandmarksVisibility(landmarks)) {
-            // Calculate current shoulder angle
+        // Use the modified landmarks check that only requires shoulders and head
+        if (this.checkLandmarksForCalibration(landmarks)) {
+            // Calculate current shoulder angle using horizontal reference
+            const leftShoulder = landmarks[11];
+            const rightShoulder = landmarks[12];
+            
+            // Create a horizontal reference point
+            const horizontalReference = {
+                x: rightShoulder.x + 0.2, // Point to the right
+                y: rightShoulder.y        // Same vertical position
+            };
+            
             const currentShoulderAngle = this.calculateAngle(
-                landmarks[11], // Left shoulder
-                landmarks[12], // Right shoulder
-                landmarks[24]  // Right hip
+                leftShoulder,
+                rightShoulder,
+                horizontalReference
             );
             
             // Calculate current neck angle
@@ -521,15 +598,16 @@ class PoseDetection {
                 y: (landmarks[11].y + landmarks[12].y) / 2
             };
             
-            const midHip = {
-                x: (landmarks[23].x + landmarks[24].x) / 2,
-                y: (landmarks[23].y + landmarks[24].y) / 2
+            // Create a vertical reference point below mid-shoulder
+            const verticalReference = {
+                x: midShoulder.x,       // Same horizontal position
+                y: midShoulder.y + 0.2  // Point below
             };
             
             const currentNeckAngle = this.calculateAngle(
-                landmarks[0],  // Nose
-                midShoulder,   // Mid-shoulders
-                midHip         // Mid-hips
+                landmarks[0], // Nose
+                midShoulder,
+                verticalReference
             );
             
             // Add to buffer for smoothing
@@ -547,21 +625,54 @@ class PoseDetection {
             const smoothedShoulderAngle = this.shoulderAngleBuffer.reduce((a, b) => a + b) / this.shoulderAngleBuffer.length;
             const smoothedNeckAngle = this.neckAngleBuffer.reduce((a, b) => a + b) / this.neckAngleBuffer.length;
             
-            // Check shoulder posture
-            let shoulderStatus = '';
-            let shoulderDeviation = Math.abs(smoothedShoulderAngle - this.calibratedShoulderAngle);
-            let shoulderThreshold = this.shoulderThreshold * this.sensitivityMultiplier;
+            // Calculate differences from calibrated angles
+            const shoulderDifference = Math.abs(this.calibratedShoulderAngle - smoothedShoulderAngle);
+            const neckDifference = Math.abs(this.calibratedNeckAngle - smoothedNeckAngle);
             
-            // Check neck posture
-            let neckStatus = '';
-            let neckDeviation = Math.abs(smoothedNeckAngle - this.calibratedNeckAngle);
-            let neckThreshold = this.neckThreshold * this.sensitivityMultiplier;
+            // Determine postural status
+            let shoulderStatus = "Good";
+            let neckStatus = "Good";
+            let shoulderColor = "green";
+            let neckColor = "green";
+            let isCurrentlyPoorPosture = false;
             
-            // Determine if posture is poor overall
-            const isPoorPostureNow = (shoulderDeviation > shoulderThreshold) || (neckDeviation > neckThreshold);
+            // Check shoulder position
+            if (shoulderDifference > this.shoulderThreshold) {
+                shoulderStatus = smoothedShoulderAngle < this.calibratedShoulderAngle 
+                    ? "Hunched Forward" 
+                    : "Too Far Back";
+                shoulderColor = "red";
+                isCurrentlyPoorPosture = true;
+            }
             
-            // Duration-based notification system similar to head detection
-            if (isPoorPostureNow) {
+            // Check neck position
+            if (neckDifference > this.neckThreshold) {
+                neckStatus = smoothedNeckAngle < this.calibratedNeckAngle 
+                    ? "Too Far Forward" 
+                    : "Too Far Back";
+                neckColor = "red";
+                isCurrentlyPoorPosture = true;
+            }
+            
+            // Update UI with current status
+            if (document.visibilityState === 'visible') {
+                this.shoulderStatus.textContent = `Shoulder Position: ${shoulderStatus}`;
+                this.shoulderStatus.style.color = shoulderColor;
+                
+                this.neckStatus.textContent = `Neck Position: ${neckStatus}`;
+                this.neckStatus.style.color = neckColor;
+                
+                // Show recommendations if posture is poor
+                if (isCurrentlyPoorPosture) {
+                    this.postureRecommendation.style.display = 'block';
+                    this.updateRecommendations(shoulderStatus, neckStatus);
+                } else {
+                    this.postureRecommendation.style.display = 'none';
+                }
+            }
+            
+            // Handle poor posture detection over time (similar to head dropping in face detection)
+            if (isCurrentlyPoorPosture) {
                 // If this is the start of poor posture, record the time
                 if (!this.isPoorPosture) {
                     this.postureDropStartTime = Date.now();
@@ -569,62 +680,28 @@ class PoseDetection {
                     console.log("Poor posture detected - starting timer");
                 }
                 
-                // Check shoulder status
-                if (shoulderDeviation > shoulderThreshold) {
-                    if (smoothedShoulderAngle > this.calibratedShoulderAngle) {
-                        shoulderStatus = 'Shoulders are hunched forward';
-                        this.shoulderStatus.textContent = shoulderStatus;
-                        this.shoulderStatus.style.color = 'red';
-                    } else {
-                        shoulderStatus = 'Shoulders are too far back';
-                        this.shoulderStatus.textContent = shoulderStatus;
-                        this.shoulderStatus.style.color = 'orange';
-                    }
-                } else {
-                    shoulderStatus = 'Shoulder posture is good';
-                    this.shoulderStatus.textContent = shoulderStatus;
-                    this.shoulderStatus.style.color = 'green';
-                }
-                
-                // Check neck status
-                if (neckDeviation > neckThreshold) {
-                    if (smoothedNeckAngle < this.calibratedNeckAngle) {
-                        neckStatus = 'Your head is too far forward';
-                        this.neckStatus.textContent = neckStatus;
-                        this.neckStatus.style.color = 'red';
-                    } else {
-                        neckStatus = 'Your head is too far back';
-                        this.neckStatus.textContent = neckStatus;
-                        this.neckStatus.style.color = 'orange';
-                    }
-                } else {
-                    neckStatus = 'Neck posture is good';
-                    this.neckStatus.textContent = neckStatus;
-                    this.neckStatus.style.color = 'green';
-                }
-                
-                // Show recommendation box
-                this.postureRecommendation.style.display = 'block';
-                
                 // Check if posture has been poor for longer than the threshold duration
                 const poorPostureDuration = Date.now() - this.postureDropStartTime;
                 if (poorPostureDuration > this.postureDropDuration) {
-                    console.log(`Poor posture for ${poorPostureDuration}ms - sending notification`);
+                    console.log(`Poor posture maintained for ${poorPostureDuration}ms - sending notification`);
                     
-                    // Determine which notification to send based on what's worse
-                    if (shoulderDeviation > neckDeviation) {
+                    // Determine which notification to send based on what's wrong
+                    if (shoulderDifference > this.shoulderThreshold) {
                         this.sendNotification(
-                            'Poor Shoulder Posture',
-                            shoulderStatus,
+                            'Poor Shoulder Posture Detected',
+                            `Your shoulders are ${shoulderStatus.toLowerCase()}. Please correct your posture.`,
                             'shoulder'
                         );
-                    } else {
+                    } else if (neckDifference > this.neckThreshold) {
                         this.sendNotification(
-                            'Poor Neck Posture',
-                            neckStatus,
+                            'Poor Neck Posture Detected',
+                            `Your neck is ${neckStatus.toLowerCase()}. Please correct your posture.`,
                             'neck'
                         );
                     }
+                    
+                    // Reset the timer but keep isPoorPosture true so we don't continually notify
+                    this.postureDropStartTime = Date.now();
                 }
             } else {
                 // Reset poor posture state if posture is back to normal
@@ -633,29 +710,7 @@ class PoseDetection {
                 }
                 this.isPoorPosture = false;
                 this.postureDropStartTime = null;
-                
-                // Update UI
-                this.shoulderStatus.textContent = 'Shoulder Position: Good';
-                this.shoulderStatus.style.color = 'green';
-                this.neckStatus.textContent = 'Neck Position: Good';
-                this.neckStatus.style.color = 'green';
-                
-                // Hide recommendation box
-                this.postureRecommendation.style.display = 'none';
             }
-            
-            // Update recommendations if needed
-            if (isPoorPostureNow) {
-                this.updateRecommendations(shoulderStatus, neckStatus);
-            }
-            
-            // Log the current angles for debugging
-            console.log("Current shoulder angle:", smoothedShoulderAngle, 
-                        "Calibrated:", this.calibratedShoulderAngle, 
-                        "Deviation:", shoulderDeviation);
-            console.log("Current neck angle:", smoothedNeckAngle, 
-                        "Calibrated:", this.calibratedNeckAngle, 
-                        "Deviation:", neckDeviation);
         }
     }
     
@@ -720,5 +775,6 @@ class PoseDetection {
 
 // Initialize the application when the DOM is fully loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new PoseDetection();
+    // Create the instance and store it in a window property
+    window.poseDetection = new PoseDetection();
 });

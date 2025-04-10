@@ -344,6 +344,34 @@
         color: var(--claude-muted-text);
         font-size: 18px;
       }
+
+      /* Add after your existing CSS */
+  
+      .status-good {
+        color: #4CAF50 !important;
+        font-weight: 600;
+      }
+      
+      .status-bad {
+        color: #F44336 !important;
+        font-weight: 600;
+        animation: pulse 1.5s infinite;
+      }
+      
+      #shoulderStatus, #neckStatus {
+        padding: 8px;
+        border-radius: 4px;
+        margin: 8px 0;
+        transition: all 0.3s ease-in-out;
+      }
+      
+      #shoulderStatus.status-bad, #neckStatus.status-bad {
+        background-color: rgba(244, 67, 54, 0.1);
+      }
+      
+      #shoulderStatus.status-good, #neckStatus.status-good {
+        background-color: rgba(76, 175, 80, 0.1);
+      }
     </style>
   </head>
 
@@ -374,8 +402,8 @@
             
             <h2>Getting Started</h2>
             <p>
-              Navigate to the Features page to access the facial posture detection system or 
-              the Neck & Shoulders page for upper body posture monitoring.
+              Navigate to the Features page to access the facial posture detection system thats utilizes MediaPipe Face Mesh or 
+              the Pose page for upper body posture monitoring using MediaPipe Pose.
             </p>
           </div>
         </div>
@@ -440,7 +468,7 @@
       <div id="posePage" class="page inactive-right">
         <div class="container">
           <div class="header">
-            <h1>Neck & Shoulders Posture Detection</h1>
+            <h1>Mediapipe Pose Posture Detection</h1>
             <p>Monitor your upper body posture in real-time</p>
           </div>
 
@@ -470,10 +498,10 @@
               <div class="status-container">
                 <h2>Posture Status</h2>
                 <div id="shoulderStatus">
-                  Shoulder Position: Waiting for calibration...
+                  Face Position: Waiting for calibration...
                 </div>
                 <div id="neckStatus">
-                  Neck Position: Waiting for calibration...
+                  Shoulder Position: Waiting for calibration...
                 </div>
                 <div id="poseCalibrationStatus"></div>
                 <div
@@ -489,7 +517,7 @@
                   </div>
                 </div>
                 <div id="postureRecommendation" style="display: none;" class="posture-recommendation">
-                  Straighten your shoulders and bring your neck back to a neutral position.
+                  Straighten your shoulders and bring your head back to a neutral position.
                 </div>
               </div>
             </div>
@@ -539,8 +567,8 @@
 
     <div class="navbar">
       <a id="homeNav" class="active">Home</a>
-      <a id="functionsNav">Face</a>
-      <a id="poseNav">Neck & Shoulders</a>
+      <a id="functionsNav">FaceMesh</a>
+      <a id="poseNav">Pose</a>
       <a id="aboutNav">About</a>
     </div>
 
