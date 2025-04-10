@@ -1,4 +1,4 @@
-// public/js/pose-detection.js
+// public/js/shoulders.js
 
 class PoseDetection {
     constructor() {
@@ -22,6 +22,13 @@ class PoseDetection {
         this.bufferSize = 10;
         this.sensitivityMultiplier = 1.2;
         this.confidenceThreshold = 0.7;
+        
+        // Posture threshold detection settings
+        this.shoulderThreshold = 10;
+        this.neckThreshold = 15;
+        this.postureDropDuration = 2000; // Time in milliseconds to trigger alert (2 seconds)
+        this.postureDropStartTime = null; // Timestamp when poor posture started
+        this.isPoorPosture = false;
 
         // Initialize the Pose model from MediaPipe
         this.pose = new Pose({
@@ -39,7 +46,14 @@ class PoseDetection {
         // Notification state management
         this.lastShoulderNotification = 0;
         this.lastNeckNotification = 0;
-        this.notificationCooldown = 30000; // 30 seconds between notifications
+        this.notificationCooldown = 10000; // 10 seconds between notifications
+        this.notificationsEnabled = false;
+        
+        // Background mode variables
+        this.isBackgroundMonitoringEnabled = false;
+        this.backgroundInterval = null;
+        this.backgroundAnalysisActive = false;
+        this.lastProcessedFrame = null;
         
         // Animation frame ID for tracking/stopping rendering
         this.animationFrameId = null;
@@ -47,60 +61,275 @@ class PoseDetection {
         // Set up the system
         this.setupEventListeners();
         this.setupPose();
-        this.requestNotificationPermission();
     }
 
     // Request permission to show system notifications
-    async requestNotificationPermission() {
+    async enableNotifications() {
         try {
+            // Check browser support for notifications
             if (!("Notification" in window)) {
                 console.log("This browser does not support notifications");
-                return;
+                return false;
             }
 
+            // Request permission from user
             const permission = await Notification.requestPermission();
             if (permission === "granted") {
                 console.log("Notification permission granted");
+                this.notificationsEnabled = true;
+                
+                // Show test notification
+                new Notification("Posture Detection Notifications Enabled", {
+                    body: "You will now receive alerts when your posture needs correction.",
+                    silent: false
+                });
+                
+                return true;
             } else {
                 console.log("Notification permission denied");
+                return false;
             }
         } catch (error) {
             console.error("Error requesting notification permission:", error);
+            return false;
         }
     }
 
     // Send a notification with cooldown prevention
     sendNotification(title, message, type) {
+        // Check if notifications are enabled
+        if (!this.notificationsEnabled) {
+            console.log("Notifications not enabled. Requesting permission...");
+            this.enableNotifications();
+            return;
+        }
+        
+        // Verify notification support and permissions
         if (!("Notification" in window) || Notification.permission !== "granted") {
+            console.log("Notification permission not granted");
             return;
         }
 
         const now = Date.now();
-        let lastNotification;
-
+        
+        // Check notification type and update appropriate timestamp
         if (type === 'shoulder') {
-            lastNotification = this.lastShoulderNotification;
+            // Check cooldown period
+            if (now - this.lastShoulderNotification < this.notificationCooldown) {
+                console.log("Shoulder notification on cooldown");
+                return; // Still in cooldown period
+            }
             this.lastShoulderNotification = now;
         } else if (type === 'neck') {
-            lastNotification = this.lastNeckNotification;
+            // Check cooldown period
+            if (now - this.lastNeckNotification < this.notificationCooldown) {
+                console.log("Neck notification on cooldown");
+                return; // Still in cooldown period
+            }
             this.lastNeckNotification = now;
         }
 
-        if (now - lastNotification < this.notificationCooldown) {
-            return;
+        // Create and display the notification
+        try {
+            const notification = new Notification(title, {
+                body: message,
+                icon: 'https://icon-library.com/images/posture-icon/posture-icon-29.jpg', // Same icon as face detection
+                requireInteraction: false, // Auto-dismiss after browser default time
+                silent: false // Play sound for attention
+            });
+            
+            // Log for debugging
+            console.log(`${type.toUpperCase()} NOTIFICATION SENT: ${title} - ${message}`);
+            
+            // Set timeout to close notification after 5 seconds
+            setTimeout(() => {
+                notification.close();
+            }, 5000);
+            
+        } catch (error) {
+            console.error("Error sending notification:", error);
         }
-
-        new Notification(title, {
-            body: message,
-            icon: '/path/to/your/icon.png',
-            silent: false
-        });
     }
 
     // Set up event listeners and Pose configuration
     setupEventListeners() {
-        this.startButton.addEventListener('click', () => this.startCamera());
+        this.startButton.addEventListener('click', async () => {
+            // Request notification permission when starting camera
+            await this.enableNotifications();
+            this.startCamera();
+        });
+        
         this.calibrateButton.addEventListener('click', () => this.startCalibration());
+        
+        // Add background monitoring toggle button
+        const backgroundButton = document.createElement('button');
+        backgroundButton.id = 'poseBackgroundButton';
+        backgroundButton.className = 'mdc-button';
+        backgroundButton.innerHTML = '<span class="mdc-button__label">Enable Background Monitoring</span>';
+        backgroundButton.disabled = true;
+        
+        // Insert the button after calibrate button
+        this.calibrateButton.parentNode.insertBefore(backgroundButton, this.calibrateButton.nextSibling);
+        this.backgroundButton = backgroundButton;
+        
+        // Add event listener for background monitoring
+        this.backgroundButton.addEventListener('click', () => {
+            if (this.isBackgroundMonitoringEnabled) {
+                this.disableBackgroundMonitoring();
+                this.backgroundButton.querySelector('.mdc-button__label').textContent = 'Enable Background Monitoring';
+            } else {
+                this.enableBackgroundMonitoring();
+                this.backgroundButton.querySelector('.mdc-button__label').textContent = 'Disable Background Monitoring';
+            }
+        });
+        
+        // Register for visibility change events
+        document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
+    }
+    
+    // Handle page visibility changes
+    handleVisibilityChange() {
+        if (document.visibilityState === 'hidden') {
+            console.log('Page is now hidden, continuing monitoring in background mode');
+            if (this.isBackgroundMonitoringEnabled) {
+                this.startBackgroundCapture();
+            }
+        } else {
+            console.log('Page is now visible, switching to foreground mode');
+            if (this.isBackgroundMonitoringEnabled) {
+                this.stopBackgroundCapture();
+            }
+        }
+    }
+    
+    // Enable background monitoring capability
+    enableBackgroundMonitoring() {
+        if (this.calibratedShoulderAngle === null || this.calibratedNeckAngle === null) {
+            alert('Please calibrate your posture first');
+            return;
+        }
+        
+        this.isBackgroundMonitoringEnabled = true;
+        console.log('Background monitoring enabled');
+        
+        // Store calibration data in localStorage
+        this.saveCalibrationData();
+        
+        // Start background monitoring if page is already hidden
+        if (document.visibilityState === 'hidden') {
+            this.startBackgroundCapture();
+        }
+        
+        // Request persistent storage permission
+        if (navigator.storage && navigator.storage.persist) {
+            navigator.storage.persist().then(isPersisted => {
+                console.log(`Storage persistence is ${isPersisted ? 'enabled' : 'not enabled'}`);
+            });
+        }
+        
+        this.sendNotification(
+            'Background Monitoring Enabled',
+            'Posture detection will continue even when this tab is not active.',
+            'shoulder'
+        );
+    }
+    
+    // Disable background monitoring
+    disableBackgroundMonitoring() {
+        this.isBackgroundMonitoringEnabled = false;
+        this.stopBackgroundCapture();
+        console.log('Background monitoring disabled');
+    }
+    
+    // Save calibration data to localStorage
+    saveCalibrationData() {
+        const calibrationData = {
+            calibratedShoulderAngle: this.calibratedShoulderAngle,
+            calibratedNeckAngle: this.calibratedNeckAngle,
+            shoulderThreshold: this.shoulderThreshold,
+            neckThreshold: this.neckThreshold,
+            lastUpdated: Date.now()
+        };
+        
+        localStorage.setItem('postureShoulderCalibrationData', JSON.stringify(calibrationData));
+        console.log('Shoulder calibration data saved for background use');
+    }
+    
+    // Load calibration data from localStorage
+    loadCalibrationData() {
+        try {
+            const data = localStorage.getItem('postureShoulderCalibrationData');
+            if (data) {
+                const parsedData = JSON.parse(data);
+                this.calibratedShoulderAngle = parsedData.calibratedShoulderAngle;
+                this.calibratedNeckAngle = parsedData.calibratedNeckAngle;
+                this.shoulderThreshold = parsedData.shoulderThreshold;
+                this.neckThreshold = parsedData.neckThreshold;
+                console.log('Loaded shoulder calibration data:', parsedData);
+                return true;
+            }
+        } catch (error) {
+            console.error('Error loading shoulder calibration data:', error);
+        }
+        return false;
+    }
+    
+    // Start background capture and processing
+    startBackgroundCapture() {
+        if (this.backgroundAnalysisActive) return;
+        
+        this.backgroundAnalysisActive = true;
+        console.log('Starting background capture for shoulder/neck posture');
+        
+        // Create a frame capture interval at lower frequency to save resources
+        this.backgroundInterval = setInterval(() => {
+            if (this.videoElement.readyState >= 2) {
+                // Create a canvas to capture the current frame
+                const canvas = document.createElement('canvas');
+                canvas.width = this.videoElement.videoWidth;
+                canvas.height = this.videoElement.videoHeight;
+                const ctx = canvas.getContext('2d');
+                
+                // Draw the current video frame to the canvas
+                ctx.drawImage(this.videoElement, 0, 0, canvas.width, canvas.height);
+                
+                // Convert to image data for processing
+                this.lastProcessedFrame = canvas.toDataURL('image/jpeg', 0.5);
+                
+                // Process the frame
+                this.processBackgroundFrame(this.lastProcessedFrame);
+            }
+        }, 1000); // Check posture every second in background mode
+    }
+    
+    // Stop background capture
+    stopBackgroundCapture() {
+        if (this.backgroundInterval) {
+            clearInterval(this.backgroundInterval);
+            this.backgroundInterval = null;
+        }
+        this.backgroundAnalysisActive = false;
+        console.log('Stopped background capture for shoulder/neck posture');
+    }
+    
+    // Process frames when in background mode
+    async processBackgroundFrame(frameData) {
+        try {
+            // Create an image element from the captured frame
+            const img = new Image();
+            img.src = frameData;
+            
+            await new Promise(resolve => {
+                img.onload = resolve;
+            });
+            
+            // Send to Pose for processing
+            await this.pose.send({ image: img });
+            
+            console.log('Background frame processed for pose detection');
+        } catch (error) {
+            console.error('Error processing background frame for pose:', error);
+        }
     }
     
     // Setup pose estimation model
@@ -130,6 +359,12 @@ class PoseDetection {
         await this.camera.start();
         this.startButton.disabled = true;
         this.calibrateButton.disabled = false;
+        
+        // If not calibrated yet, check if we can load from storage
+        if (this.calibratedShoulderAngle === null && this.loadCalibrationData()) {
+            console.log('Loaded shoulder calibration data from storage');
+            this.backgroundButton.disabled = false;
+        }
     }
 
     // Calculate angle between three points
@@ -153,6 +388,12 @@ class PoseDetection {
         this.calibrationStatus.textContent = 'Calibrating... Please sit in your ideal posture';
         this.calibrationProgress.determinate = true;
         this.calibrationProgress.progress = 0;
+        
+        // Reset posture state
+        this.postureDropStartTime = null;
+        this.isPoorPosture = false;
+        this.shoulderAngleBuffer = [];
+        this.neckAngleBuffer = [];
 
         // Arrays to store calibration measurements
         const shoulderAngles = [];
@@ -172,6 +413,16 @@ class PoseDetection {
                 this.calibrationStatus.textContent = 'Calibration complete!';
                 this.calibrateButton.disabled = false;
                 this.calibrationProgress.progress = 1;
+                
+                // Enable background button after calibration
+                this.backgroundButton.disabled = false;
+                
+                // Send notification to confirm calibration
+                this.sendNotification(
+                    'Calibration Complete',
+                    'Your posture baseline has been recorded. Notifications are now active.',
+                    'shoulder'
+                );
                 
                 console.log("Calibrated shoulder angle:", this.calibratedShoulderAngle);
                 console.log("Calibrated neck angle:", this.calibratedNeckAngle);
@@ -299,51 +550,104 @@ class PoseDetection {
             // Check shoulder posture
             let shoulderStatus = '';
             let shoulderDeviation = Math.abs(smoothedShoulderAngle - this.calibratedShoulderAngle);
-            let shoulderThreshold = 10 * this.sensitivityMultiplier;
-            
-            if (shoulderDeviation > shoulderThreshold) {
-                if (smoothedShoulderAngle > this.calibratedShoulderAngle) {
-                    shoulderStatus = 'Shoulders are hunched forward';
-                    this.shoulderStatus.textContent = shoulderStatus;
-                    this.shoulderStatus.style.color = 'red';
-                    this.sendNotification('Posture Alert', 'Your shoulders are hunched forward', 'shoulder');
-                } else {
-                    shoulderStatus = 'Shoulders are too far back';
-                    this.shoulderStatus.textContent = shoulderStatus;
-                    this.shoulderStatus.style.color = 'orange';
-                    this.sendNotification('Posture Alert', 'Your shoulders are too far back', 'shoulder');
-                }
-            } else {
-                shoulderStatus = 'Shoulder posture is good';
-                this.shoulderStatus.textContent = shoulderStatus;
-                this.shoulderStatus.style.color = 'green';
-            }
+            let shoulderThreshold = this.shoulderThreshold * this.sensitivityMultiplier;
             
             // Check neck posture
             let neckStatus = '';
             let neckDeviation = Math.abs(smoothedNeckAngle - this.calibratedNeckAngle);
-            let neckThreshold = 15 * this.sensitivityMultiplier;
+            let neckThreshold = this.neckThreshold * this.sensitivityMultiplier;
             
-            if (neckDeviation > neckThreshold) {
-                if (smoothedNeckAngle < this.calibratedNeckAngle) {
-                    neckStatus = 'Your head is too far forward';
-                    this.neckStatus.textContent = neckStatus;
-                    this.neckStatus.style.color = 'red';
-                    this.sendNotification('Posture Alert', 'Your head is too far forward', 'neck');
+            // Determine if posture is poor overall
+            const isPoorPostureNow = (shoulderDeviation > shoulderThreshold) || (neckDeviation > neckThreshold);
+            
+            // Duration-based notification system similar to head detection
+            if (isPoorPostureNow) {
+                // If this is the start of poor posture, record the time
+                if (!this.isPoorPosture) {
+                    this.postureDropStartTime = Date.now();
+                    this.isPoorPosture = true;
+                    console.log("Poor posture detected - starting timer");
+                }
+                
+                // Check shoulder status
+                if (shoulderDeviation > shoulderThreshold) {
+                    if (smoothedShoulderAngle > this.calibratedShoulderAngle) {
+                        shoulderStatus = 'Shoulders are hunched forward';
+                        this.shoulderStatus.textContent = shoulderStatus;
+                        this.shoulderStatus.style.color = 'red';
+                    } else {
+                        shoulderStatus = 'Shoulders are too far back';
+                        this.shoulderStatus.textContent = shoulderStatus;
+                        this.shoulderStatus.style.color = 'orange';
+                    }
                 } else {
-                    neckStatus = 'Your head is too far back';
+                    shoulderStatus = 'Shoulder posture is good';
+                    this.shoulderStatus.textContent = shoulderStatus;
+                    this.shoulderStatus.style.color = 'green';
+                }
+                
+                // Check neck status
+                if (neckDeviation > neckThreshold) {
+                    if (smoothedNeckAngle < this.calibratedNeckAngle) {
+                        neckStatus = 'Your head is too far forward';
+                        this.neckStatus.textContent = neckStatus;
+                        this.neckStatus.style.color = 'red';
+                    } else {
+                        neckStatus = 'Your head is too far back';
+                        this.neckStatus.textContent = neckStatus;
+                        this.neckStatus.style.color = 'orange';
+                    }
+                } else {
+                    neckStatus = 'Neck posture is good';
                     this.neckStatus.textContent = neckStatus;
-                    this.neckStatus.style.color = 'orange';
-                    this.sendNotification('Posture Alert', 'Your head is too far back', 'neck');
+                    this.neckStatus.style.color = 'green';
+                }
+                
+                // Show recommendation box
+                this.postureRecommendation.style.display = 'block';
+                
+                // Check if posture has been poor for longer than the threshold duration
+                const poorPostureDuration = Date.now() - this.postureDropStartTime;
+                if (poorPostureDuration > this.postureDropDuration) {
+                    console.log(`Poor posture for ${poorPostureDuration}ms - sending notification`);
+                    
+                    // Determine which notification to send based on what's worse
+                    if (shoulderDeviation > neckDeviation) {
+                        this.sendNotification(
+                            'Poor Shoulder Posture',
+                            shoulderStatus,
+                            'shoulder'
+                        );
+                    } else {
+                        this.sendNotification(
+                            'Poor Neck Posture',
+                            neckStatus,
+                            'neck'
+                        );
+                    }
                 }
             } else {
-                neckStatus = 'Neck posture is good';
-                this.neckStatus.textContent = neckStatus;
+                // Reset poor posture state if posture is back to normal
+                if (this.isPoorPosture) {
+                    console.log("Posture returned to normal");
+                }
+                this.isPoorPosture = false;
+                this.postureDropStartTime = null;
+                
+                // Update UI
+                this.shoulderStatus.textContent = 'Shoulder Position: Good';
+                this.shoulderStatus.style.color = 'green';
+                this.neckStatus.textContent = 'Neck Position: Good';
                 this.neckStatus.style.color = 'green';
+                
+                // Hide recommendation box
+                this.postureRecommendation.style.display = 'none';
             }
             
-            // Provide recommendations based on posture issues
-            this.updateRecommendations(shoulderStatus, neckStatus);
+            // Update recommendations if needed
+            if (isPoorPostureNow) {
+                this.updateRecommendations(shoulderStatus, neckStatus);
+            }
             
             // Log the current angles for debugging
             console.log("Current shoulder angle:", smoothedShoulderAngle, 
@@ -393,6 +697,7 @@ class PoseDetection {
         
         this.startButton.disabled = false;
         this.calibrateButton.disabled = true;
+        this.backgroundButton.disabled = true;
     }
     
     // Reset all calibration data
@@ -401,29 +706,19 @@ class PoseDetection {
         this.calibratedNeckAngle = null;
         this.shoulderAngleBuffer = [];
         this.neckAngleBuffer = [];
-        this.shoulderStatus.textContent = 'Not calibrated';
-        this.shoulderStatus.style.color = 'black';
-        this.neckStatus.textContent = 'Not calibrated';
-        this.neckStatus.style.color = 'black';
+        this.shoulderStatus.textContent = 'Shoulder Position: Waiting for calibration...';
+        this.shoulderStatus.style.color = '';
+        this.neckStatus.textContent = 'Neck Position: Waiting for calibration...';
+        this.neckStatus.style.color = '';
+        this.postureRecommendation.style.display = 'none';
         this.postureRecommendation.textContent = '';
-        this.calibrationStatus.textContent = 'Not calibrated';
+        this.calibrationStatus.textContent = '';
         this.calibrationProgress.progress = 0;
+        this.backgroundButton.disabled = true;
     }
 }
 
 // Initialize the application when the DOM is fully loaded
 document.addEventListener('DOMContentLoaded', () => {
-    const poseDetection = new PoseDetection();
-    
-    // Add stop button functionality if needed
-    const stopButton = document.getElementById('stopPoseButton');
-    if (stopButton) {
-        stopButton.addEventListener('click', () => poseDetection.stop());
-    }
-    
-    // Add reset button functionality if needed
-    const resetButton = document.getElementById('resetPoseButton');
-    if (resetButton) {
-        resetButton.addEventListener('click', () => poseDetection.reset());
-    }
+    new PoseDetection();
 });
